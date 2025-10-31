@@ -4,9 +4,10 @@ import fetch from "node-fetch";
 
 const {
   PORT = 3000,
-  ALLOWED_ORIGIN = "https://savehub.site",
+  // NEW: comma-separated list (e.g., "https://savehub.site,https://www.savehub.site")
+  ALLOWED_ORIGINS,
   KIT_API_KEY,
-  KIT_API_SECRET, // not strictly needed here, but keep for future secured flows
+  KIT_API_SECRET, // reserved for future secured flows
   KIT_FORM_ID,    // 8705695
   TAG_SAVINGS,    // 12078155
   TAG_AUTOMATION, // 12078156
@@ -16,23 +17,40 @@ const {
 const app = express();
 app.use(express.json());
 
-// CORS: allow main site
+// --- CORS --------------------------------------------------------------------
+const allowedOrigins = (ALLOWED_ORIGINS || "")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
+// Fallback to both domains if env not set
+if (allowedOrigins.length === 0) {
+  allowedOrigins.push("https://savehub.site", "https://www.savehub.site");
+}
+
 app.use(cors({
-  origin: [ALLOWED_ORIGIN, "https://www.savehub.site"],
-  methods: ["POST", "OPTIONS"]
+  origin(origin, cb) {
+    // allow requests without an Origin (curl/healthchecks) or whitelisted origins
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    return cb(new Error(`CORS blocked: ${origin}`));
+  },
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: false
 }));
 
-// simple email check
+// fast preflight
+app.options("*", cors());
+
+// --- utils -------------------------------------------------------------------
 const isEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 
-// map product -> tag id
 const tagMap = {
   savings: TAG_SAVINGS,
   automation: TAG_AUTOMATION,
   bills: TAG_BILLS
 };
 
-// helper: subscribe to Kit form
 async function subscribeToForm(email) {
   const url = `https://api.convertkit.com/v3/forms/${KIT_FORM_ID}/subscribe`;
   const res = await fetch(url, {
@@ -40,12 +58,10 @@ async function subscribeToForm(email) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ api_key: KIT_API_KEY, email })
   });
-  // CK returns 200 for existing subscribers too. We accept 200/201.
   if (!res.ok) throw new Error(`form subscribe failed: ${res.status}`);
   return res.json();
 }
 
-// helper: apply tag
 async function tagSubscriber(email, tagId) {
   const url = `https://api.convertkit.com/v3/tags/${tagId}/subscribe`;
   const res = await fetch(url, {
@@ -57,16 +73,17 @@ async function tagSubscriber(email, tagId) {
   return res.json();
 }
 
-// accept both / and /subscribe (in case you strip the prefix at the proxy)
+// accept both / and /subscribe (in case the proxy strips a prefix)
 app.post(["/", "/subscribe"], async (req, res) => {
   try {
     const { email, source } = req.body || {};
     if (!isEmail(email)) return res.status(400).json({ ok: false, error: "Invalid email" });
+
     const tagId = tagMap[source];
     if (!tagId) return res.status(400).json({ ok: false, error: "Unknown source" });
 
-    await subscribeToForm(email);      // idempotent
-    await tagSubscriber(email, tagId); // idempotent
+    await subscribeToForm(email);      // CK is idempotent here
+    await tagSubscriber(email, tagId); // also idempotent
 
     res.json({ ok: true });
   } catch (err) {
@@ -75,6 +92,7 @@ app.post(["/", "/subscribe"], async (req, res) => {
   }
 });
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/health", (_req, res) => res.status(200).send("ok"));
 
-app.listen(PORT, () => console.log(`subscribe service on :${PORT}`));
+// IMPORTANT: bind 0.0.0.0 for Docker
+app.listen(PORT, "0.0.0.0", () => console.log(`subscribe service on :${PORT}`));
