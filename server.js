@@ -11,10 +11,11 @@ const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
 // Tag IDs (we’ll map your previous ConvertKit tags)
 const TAGS = {
-  savings_interest: 1, // replace with your actual tag IDs from Brevo once created
-  automation_stack_interest: 2,
-  bill_negotiation_interest: 3
+  savings_interest: true,
+  automation_stack_interest: true,
+  bill_negotiation_interest: true
 };
+
 
 // Add or update contact in Brevo
 async function addOrUpdateContact(email, firstName, tag) {
