@@ -1,98 +1,100 @@
 import express from "express";
-import cors from "cors";
 import fetch from "node-fetch";
-
-const {
-  PORT = 3000,
-  // NEW: comma-separated list (e.g., "https://savehub.site,https://www.savehub.site")
-  ALLOWED_ORIGINS,
-  KIT_API_KEY,
-  KIT_API_SECRET, // reserved for future secured flows
-  KIT_FORM_ID,    // 8705695
-  TAG_SAVINGS,    // 12078155
-  TAG_AUTOMATION, // 12078156
-  TAG_BILLS       // 12078158
-} = process.env;
+import cors from "cors";
 
 const app = express();
 app.use(express.json());
+app.use(cors());
 
-// --- CORS --------------------------------------------------------------------
-const allowedOrigins = (ALLOWED_ORIGINS || "")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
 
-// Fallback to both domains if env not set
-if (allowedOrigins.length === 0) {
-  allowedOrigins.push("https://savehub.site", "https://www.savehub.site");
-}
 
-app.use(cors({
-  origin(origin, cb) {
-    // allow requests without an Origin (curl/healthchecks) or whitelisted origins
-    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
-    return cb(new Error(`CORS blocked: ${origin}`));
-  },
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: false
-}));
-
-// fast preflight
-app.options("*", cors());
-
-// --- utils -------------------------------------------------------------------
-const isEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-
-const tagMap = {
-  savings: TAG_SAVINGS,
-  automation: TAG_AUTOMATION,
-  bills: TAG_BILLS
+// Tag IDs (we’ll map your previous ConvertKit tags)
+const TAGS = {
+  savings_interest: 1, // replace with your actual tag IDs from Brevo once created
+  automation_stack_interest: 2,
+  bill_negotiation_interest: 3
 };
 
-async function subscribeToForm(email) {
-  const url = `https://api.convertkit.com/v3/forms/${KIT_FORM_ID}/subscribe`;
-  const res = await fetch(url, {
+// Add or update contact in Brevo
+async function addOrUpdateContact(email, firstName, tag) {
+  const res = await fetch("https://api.brevo.com/v3/contacts", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: KIT_API_KEY, email })
+    headers: {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "api-key": BREVO_API_KEY
+    },
+    body: JSON.stringify({
+      email,
+      attributes: { FIRSTNAME: firstName || "" },
+      listIds: [], // optional if you use lists
+      updateEnabled: true,
+      emailBlacklisted: false,
+      smsBlacklisted: false
+    })
   });
-  if (!res.ok) throw new Error(`form subscribe failed: ${res.status}`);
-  return res.json();
+
+  const data = await res.json();
+  console.log("Contact sync:", data);
+
+  // Add tag
+  if (tag && TAGS[tag]) {
+    await fetch(`https://api.brevo.com/v3/contacts/${encodeURIComponent(email)}/tags`, {
+      method: "POST",
+      headers: {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY
+      },
+      body: JSON.stringify({ tags: [tag] })
+    });
+  }
+
+  return data;
 }
 
-async function tagSubscriber(email, tagId) {
-  const url = `https://api.convertkit.com/v3/tags/${tagId}/subscribe`;
-  const res = await fetch(url, {
+// Send welcome email
+async function sendWelcomeEmail(email, firstName, product) {
+  const subject = `Welcome to SaveHub – ${product === "savings_interest" ? "Smart Savings" : product === "automation_stack_interest" ? "Automation Stack" : "Bill Negotiation"}`
+  const htmlContent = `
+    <h2>Hi ${firstName || "there"}, welcome to SaveHub!</h2>
+    <p>Thanks for your interest in our ${product.replace("_", " ")} program.</p>
+    <p>We'll keep you updated with the latest insights and tools to help you save more, automate smarter, and get early access to new features.</p>
+    <p>— The SaveHub Team</p>
+  `;
+
+  await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: KIT_API_KEY, email })
+    headers: {
+      "accept": "application/json",
+      "content-type": "application/json",
+      "api-key": BREVO_API_KEY
+    },
+    body: JSON.stringify({
+      sender: { name: "SaveHub", email: "info@savehub.site" },
+      to: [{ email }],
+      subject,
+      htmlContent
+    })
   });
-  if (!res.ok) throw new Error(`tagging failed: ${res.status}`);
-  return res.json();
 }
 
-// accept both / and /subscribe (in case the proxy strips a prefix)
-app.post(["/", "/subscribe"], async (req, res) => {
+// POST /subscribe
+app.post("/subscribe", async (req, res) => {
   try {
-    const { email, source } = req.body || {};
-    if (!isEmail(email)) return res.status(400).json({ ok: false, error: "Invalid email" });
+    const { email, firstName, tag } = req.body;
+    if (!email || !tag) return res.status(400).json({ error: "Email and tag are required" });
 
-    const tagId = tagMap[source];
-    if (!tagId) return res.status(400).json({ ok: false, error: "Unknown source" });
+    await addOrUpdateContact(email, firstName, tag);
+    await sendWelcomeEmail(email, firstName, tag);
 
-    await subscribeToForm(email);      // CK is idempotent here
-    await tagSubscriber(email, tagId); // also idempotent
-
-    res.json({ ok: true });
+    res.json({ success: true, message: "Subscribed and email sent." });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ ok: false, error: "Server error" });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
-app.get("/health", (_req, res) => res.status(200).send("ok"));
-
-// IMPORTANT: bind 0.0.0.0 for Docker
-app.listen(PORT, "0.0.0.0", () => console.log(`subscribe service on :${PORT}`));
+// Start the server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`SaveHub API running on port ${PORT}`));
