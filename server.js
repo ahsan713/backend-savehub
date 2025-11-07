@@ -6,7 +6,8 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-
+// Brevo API Key (keep secure, use environment variable in production)
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
 // Tag IDs (we’ll map your previous ConvertKit tags)
 const TAGS = {
