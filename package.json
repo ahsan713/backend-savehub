@@ -1,6 +1,5 @@
 {
-  "name": "savehub-subscribe",
-  "type": "module",
+  "name": "backend-savehub",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
@@ -9,7 +8,8 @@
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.19.2",
+    "express": "^4.19.0",
     "node-fetch": "^3.3.2"
   }
 }
+
