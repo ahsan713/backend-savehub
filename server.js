@@ -17,40 +17,34 @@ const TAGS = {
 };
 
 
-// Add or update contact in Brevo
-async function addOrUpdateContact(email, firstName, tag) {
+// Instead of lists or tags, use an INTEREST attribute
+async function addOrUpdateContact(email, firstName, interestKey) {
+  const body = {
+    email,
+    attributes: {
+      FIRSTNAME: firstName || "",
+      INTEREST: interestKey
+    },
+    updateEnabled: true
+  };
+
   const res = await fetch("https://api.brevo.com/v3/contacts", {
     method: "POST",
     headers: {
       "accept": "application/json",
       "content-type": "application/json",
-      "api-key": BREVO_API_KEY
+      "api-key": process.env.BREVO_API_KEY
     },
-    body: JSON.stringify({
-      email,
-      attributes: { FIRSTNAME: firstName || "" },
-      listIds: [], // optional if you use lists
-      updateEnabled: true,
-      emailBlacklisted: false,
-      smsBlacklisted: false
-    })
+    body: JSON.stringify(body)
   });
 
   const data = await res.json();
   console.log("Contact sync:", data);
 
-  // Add tag
-  if (tag && TAGS[tag]) {
-    await fetch(`https://api.brevo.com/v3/contacts/${encodeURIComponent(email)}/tags`, {
-      method: "POST",
-      headers: {
-        "accept": "application/json",
-        "content-type": "application/json",
-        "api-key": BREVO_API_KEY
-      },
-      body: JSON.stringify({ tags: [tag] })
-    });
-  }
+  if (!res.ok) throw new Error(`Brevo contact error: ${res.status}`);
+  return data;
+}
+
 
   return data;
 }
