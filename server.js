@@ -75,6 +75,16 @@ async function sendWelcomeEmail(email, firstName, product) {
   });
 }
 
+// Health check endpoints for Coolify
+app.get("/", (req, res) => {
+  res.send("OK");
+});
+
+app.get("/healthz", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+
 // POST /subscribe
 app.post("/subscribe", async (req, res) => {
   try {
