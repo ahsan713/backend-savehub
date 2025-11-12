@@ -12,13 +12,59 @@ if (!BREVO_API_KEY) {
   console.warn("Warning: BREVO_API_KEY is not set");
 }
 
-// Create or update contact with INTEREST attribute
+// Create or update contact and merge INTEREST values
 async function addOrUpdateContact(email, firstName, interestKey) {
+  let interestsSet = new Set();
+  let isNewInterest = true;
+
+  // 1) Try to fetch existing contact
+  try {
+    const getRes = await fetch(
+      `https://api.brevo.com/v3/contacts/${encodeURIComponent(email)}`,
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "api-key": BREVO_API_KEY
+        }
+      }
+    );
+
+    if (getRes.ok) {
+      const existing = await getRes.json();
+      const current = existing.attributes?.INTEREST || "";
+
+      if (current) {
+        current
+          .split(",")
+          .map((v) => v.trim())
+          .filter(Boolean)
+          .forEach((v) => interestsSet.add(v));
+      }
+
+      if (interestsSet.has(interestKey)) {
+        isNewInterest = false;
+      } else {
+        interestsSet.add(interestKey);
+      }
+    }
+  } catch (e) {
+    console.log("Brevo GET contact error (can ignore 404):", e.message);
+  }
+
+  // 2) Build new INTEREST string
+  if (interestsSet.size === 0) {
+    interestsSet.add(interestKey);
+  }
+
+  const interestsString = Array.from(interestsSet).join(",");
+
+  // 3) Upsert contact with merged interests
   const body = {
     email,
     attributes: {
       FIRSTNAME: firstName || "",
-      INTEREST: interestKey
+      INTEREST: interestsString
     },
     updateEnabled: true
   };
@@ -34,7 +80,7 @@ async function addOrUpdateContact(email, firstName, interestKey) {
   });
 
   const data = await res.json();
-  console.log("Brevo contact response:", data);
+  console.log("Brevo contact upsert response:", data);
 
   if (!res.ok) {
     throw new Error(
@@ -42,52 +88,9 @@ async function addOrUpdateContact(email, firstName, interestKey) {
     );
   }
 
-  return data;
+  // Return whether this interest was new
+  return { data, isNewInterest };
 }
-
-// Send welcome email based on interestKey
-async function sendWelcomeEmail(email, firstName, interestKey) {
-  const label =
-    interestKey === "savings_interest"
-      ? "Smart Savings"
-      : interestKey === "automation_stack_interest"
-      ? "Automation Stack"
-      : interestKey === "bill_negotiation_interest"
-      ? "Bill Negotiation"
-      : "SaveHub";
-
-  const subject = `Welcome to SaveHub – ${label}`;
-
-  const htmlContent = `
-    <h2>Hi ${firstName || "there"}, welcome to SaveHub!</h2>
-    <p>Thanks for your interest in our ${label} program.</p>
-    <p>We will keep you updated with useful tools and resources.</p>
-    <p>– The SaveHub Team</p>
-  `;
-
-  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "api-key": BREVO_API_KEY
-    },
-    body: JSON.stringify({
-      sender: { name: "SaveHub", email: "info@savehub.site" },
-      to: [{ email }],
-      subject,
-      htmlContent
-    })
-  });
-
-  const data = await res.json();
-  console.log("Brevo email response:", data);
-
-  if (!res.ok) {
-    throw new Error(
-      `Brevo email error: ${res.status} ${JSON.stringify(data)}`
-    );
-  }
 
   return data;
 }
@@ -102,6 +105,7 @@ app.get("/healthz", (req, res) => {
 });
 
 // Subscription endpoint
+
 app.post("/subscribe", async (req, res) => {
   try {
     const { email, firstName, tag } = req.body;
@@ -112,15 +116,25 @@ app.post("/subscribe", async (req, res) => {
         .json({ error: "Email and tag (interest) are required" });
     }
 
-    await addOrUpdateContact(email, firstName, tag);
-    await sendWelcomeEmail(email, firstName, tag);
+    const { isNewInterest } = await addOrUpdateContact(email, firstName, tag);
 
-    res.json({ success: true, message: "Subscribed and email sent." });
+    // Only send welcome email if this is a new interest for this contact
+    if (isNewInterest) {
+      await sendWelcomeEmail(email, firstName, tag);
+    }
+
+    res.json({
+      success: true,
+      message: isNewInterest
+        ? "Subscribed and email sent."
+        : "Interest updated; email already sent before for this product."
+    });
   } catch (err) {
     console.error("Subscribe error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
 
 // Start server
 const PORT = process.env.PORT || 3000;
