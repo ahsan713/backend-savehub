@@ -14,8 +14,10 @@ if (!BREVO_API_KEY) {
 
 /**
  * Create or update contact and merge INTEREST values.
- * INTEREST will be a comma-separated list, e.g.:
- * "savings_interest,automation_stack_interest"
+ * INTEREST will be a comma-separated list:
+ *   "savings_interest,automation_stack_interest"
+ *
+ * Returns: { data, isNewInterest, success }
  */
 async function addOrUpdateContact(email, firstName, interestKey) {
   let interestsSet = new Set();
@@ -51,6 +53,8 @@ async function addOrUpdateContact(email, firstName, interestKey) {
       } else {
         interestsSet.add(interestKey);
       }
+    } else {
+      console.log("Brevo GET contact non-OK:", getRes.status);
     }
   } catch (e) {
     console.log("Brevo GET contact error (can ignore 404):", e.message);
@@ -73,32 +77,42 @@ async function addOrUpdateContact(email, firstName, interestKey) {
     updateEnabled: true
   };
 
-  const res = await fetch("https://api.brevo.com/v3/contacts", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "api-key": BREVO_API_KEY
-    },
-    body: JSON.stringify(body)
-  });
+  try {
+    const res = await fetch("https://api.brevo.com/v3/contacts", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY
+      },
+      body: JSON.stringify(body)
+    });
 
-  const data = await res.json();
-  console.log("Brevo contact upsert response:", data);
+    const data = await res.json();
+    console.log("Brevo contact upsert response:", res.status, data);
 
-  if (!res.ok) {
-    throw new Error(
-      `Brevo contact error: ${res.status} ${JSON.stringify(data)}`
-    );
+    const success = res.ok;
+    if (!success) {
+      // Log, but do not throw, so we don't return 500 to the user
+      console.error(
+        "Brevo contact error (non-fatal):",
+        res.status,
+        JSON.stringify(data)
+      );
+    }
+
+    return { data, isNewInterest, success };
+  } catch (err) {
+    console.error("Brevo contact network error:", err.message);
+    return { data: null, isNewInterest, success: false };
   }
-
-  // Return whether this interest was new
-  return { data, isNewInterest };
 }
 
 /**
  * Send welcome email based on interestKey.
  * Only called when interest is new for that contact.
+ *
+ * Returns: { data, success }
  */
 async function sendWelcomeEmail(email, firstName, interestKey) {
   const label =
@@ -119,31 +133,39 @@ async function sendWelcomeEmail(email, firstName, interestKey) {
     <p>– The SaveHub Team</p>
   `;
 
-  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "api-key": BREVO_API_KEY
-    },
-    body: JSON.stringify({
-      sender: { name: "SaveHub", email: "info@savehub.site" },
-      to: [{ email }],
-      subject,
-      htmlContent
-    })
-  });
+  try {
+    const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY
+      },
+      body: JSON.stringify({
+        sender: { name: "SaveHub", email: "info@savehub.site" },
+        to: [{ email }],
+        subject,
+        htmlContent
+      })
+    });
 
-  const data = await res.json();
-  console.log("Brevo email response:", data);
+    const data = await res.json();
+    console.log("Brevo email response:", res.status, data);
 
-  if (!res.ok) {
-    throw new Error(
-      `Brevo email error: ${res.status} ${JSON.stringify(data)}`
-    );
+    const success = res.ok;
+    if (!success) {
+      console.error(
+        "Brevo email error (non-fatal):",
+        res.status,
+        JSON.stringify(data)
+      );
+    }
+
+    return { data, success };
+  } catch (err) {
+    console.error("Brevo email network error:", err.message);
+    return { data: null, success: false };
   }
-
-  return data;
 }
 
 // Health check endpoints for Coolify / Traefik
@@ -166,21 +188,24 @@ app.post("/subscribe", async (req, res) => {
         .json({ error: "Email and tag (interest) are required" });
     }
 
-    const { isNewInterest } = await addOrUpdateContact(email, firstName, tag);
+    const contactResult = await addOrUpdateContact(email, firstName, tag);
 
     // Only send welcome email if this is a new interest for this contact
-    if (isNewInterest) {
+    if (contactResult.isNewInterest) {
       await sendWelcomeEmail(email, firstName, tag);
     }
 
+    const message = contactResult.isNewInterest
+      ? "Subscribed and email sent."
+      : "Interest updated; email already sent before for this product.";
+
+    // Always return 200 unless there is a real server bug
     res.json({
-      success: true,
-      message: isNewInterest
-        ? "Subscribed and email sent."
-        : "Interest updated; email already sent before for this product."
+      success: contactResult.success,
+      message
     });
   } catch (err) {
-    console.error("Subscribe error:", err);
+    console.error("Subscribe fatal error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 });
