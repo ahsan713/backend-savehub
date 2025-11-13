@@ -12,7 +12,11 @@ if (!BREVO_API_KEY) {
   console.warn("Warning: BREVO_API_KEY is not set");
 }
 
-// Create or update contact and merge INTEREST values
+/**
+ * Create or update contact and merge INTEREST values.
+ * INTEREST will be a comma-separated list, e.g.:
+ * "savings_interest,automation_stack_interest"
+ */
 async function addOrUpdateContact(email, firstName, interestKey) {
   let interestsSet = new Set();
   let isNewInterest = true;
@@ -92,10 +96,57 @@ async function addOrUpdateContact(email, firstName, interestKey) {
   return { data, isNewInterest };
 }
 
+/**
+ * Send welcome email based on interestKey.
+ * Only called when interest is new for that contact.
+ */
+async function sendWelcomeEmail(email, firstName, interestKey) {
+  const label =
+    interestKey === "savings_interest"
+      ? "Smart Savings"
+      : interestKey === "automation_stack_interest"
+      ? "Automation Stack"
+      : interestKey === "bill_negotiation_interest"
+      ? "Bill Negotiation"
+      : "SaveHub";
+
+  const subject = `Welcome to SaveHub – ${label}`;
+
+  const htmlContent = `
+    <h2>Hi ${firstName || "there"}, welcome to SaveHub!</h2>
+    <p>Thanks for your interest in our ${label} program.</p>
+    <p>We will keep you updated with useful tools and resources.</p>
+    <p>– The SaveHub Team</p>
+  `;
+
+  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+      "api-key": BREVO_API_KEY
+    },
+    body: JSON.stringify({
+      sender: { name: "SaveHub", email: "info@savehub.site" },
+      to: [{ email }],
+      subject,
+      htmlContent
+    })
+  });
+
+  const data = await res.json();
+  console.log("Brevo email response:", data);
+
+  if (!res.ok) {
+    throw new Error(
+      `Brevo email error: ${res.status} ${JSON.stringify(data)}`
+    );
+  }
+
   return data;
 }
 
-// Health check endpoints for Coolify
+// Health check endpoints for Coolify / Traefik
 app.get("/", (req, res) => {
   res.send("OK");
 });
@@ -105,7 +156,6 @@ app.get("/healthz", (req, res) => {
 });
 
 // Subscription endpoint
-
 app.post("/subscribe", async (req, res) => {
   try {
     const { email, firstName, tag } = req.body;
@@ -134,7 +184,6 @@ app.post("/subscribe", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
 
 // Start server
 const PORT = process.env.PORT || 3000;
