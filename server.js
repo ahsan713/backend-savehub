@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
+import fs from "fs";
 
 const app = express();
 app.use(express.json());
@@ -10,6 +11,21 @@ app.use(cors());
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
 if (!BREVO_API_KEY) {
   console.warn("Warning: BREVO_API_KEY is not set");
+}
+
+/** Helper: get client IP behind proxy */
+function getClientIp(req) {
+  const xff = req.headers["x-forwarded-for"];
+  if (xff) return xff.split(",")[0].trim();
+  return req.ip;
+}
+
+/** Helper: append a JSON line to signup.log */
+function logSignup(entry) {
+  const line = JSON.stringify(entry) + "\n";
+  fs.appendFile("signup.log", line, (err) => {
+    if (err) console.error("Error writing signup log:", err.message);
+  });
 }
 
 /**
@@ -93,7 +109,6 @@ async function addOrUpdateContact(email, firstName, interestKey) {
 
     const success = res.ok;
     if (!success) {
-      // Log, but do not throw, so we don't return 500 to the user
       console.error(
         "Brevo contact error (non-fatal):",
         res.status,
@@ -168,7 +183,7 @@ async function sendWelcomeEmail(email, firstName, interestKey) {
   }
 }
 
-// Health check endpoints for Coolify / Traefik
+// Health check endpoints
 app.get("/", (req, res) => {
   res.send("OK");
 });
@@ -180,7 +195,7 @@ app.get("/healthz", (req, res) => {
 // Subscription endpoint
 app.post("/subscribe", async (req, res) => {
   try {
-    const { email, firstName, tag } = req.body;
+    const { email, firstName, tag, source } = req.body;
 
     if (!email || !tag) {
       return res
@@ -190,7 +205,6 @@ app.post("/subscribe", async (req, res) => {
 
     const contactResult = await addOrUpdateContact(email, firstName, tag);
 
-    // Only send welcome email if this is a new interest for this contact
     if (contactResult.isNewInterest) {
       await sendWelcomeEmail(email, firstName, tag);
     }
@@ -199,7 +213,24 @@ app.post("/subscribe", async (req, res) => {
       ? "Subscribed and email sent."
       : "Interest updated; email already sent before for this product.";
 
-    // Always return 200 unless there is a real server bug
+    // Analytics log
+    const ip = getClientIp(req);
+    const userAgent = req.headers["user-agent"] || "";
+    const referer = req.headers["referer"] || "";
+
+    logSignup({
+      ts: new Date().toISOString(),
+      email,
+      firstName: firstName || "",
+      tag,
+      source: source || "",
+      isNewInterest: contactResult.isNewInterest,
+      success: contactResult.success,
+      ip,
+      userAgent,
+      referer
+    });
+
     res.json({
       success: contactResult.success,
       message
